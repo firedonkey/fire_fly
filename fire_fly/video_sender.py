@@ -29,7 +29,7 @@ class VideoSender(Node):
         
         # Parameters
         self.declare_parameter('camera_topic', '/camera/camera/color/image_raw')
-        self.declare_parameter('websocket_url', 'https://video-stream-backend-jr2c.onrender.com')
+        self.declare_parameter('websocket_url', 'wss://video-stream-backend-jr2c.onrender.com/ws/video')
         self.declare_parameter('fps', 30)
         self.declare_parameter('image_width', 640)
         self.declare_parameter('image_height', 480)
