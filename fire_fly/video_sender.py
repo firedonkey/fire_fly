@@ -12,6 +12,7 @@ import logging
 import websockets
 from threading import Thread
 import sys
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +33,7 @@ class VideoSender(Node):
         self.declare_parameter('fps', 30)
         self.declare_parameter('image_width', 640)
         self.declare_parameter('image_height', 480)
-        self.declare_parameter('jpeg_quality', 85)
+        self.declare_parameter('bitrate', 1000000)  # 1 Mbps
         
         # Get parameters
         self.camera_topic = self.get_parameter('camera_topic').value
@@ -40,7 +41,7 @@ class VideoSender(Node):
         self.fps = self.get_parameter('fps').value
         self.image_width = self.get_parameter('image_width').value
         self.image_height = self.get_parameter('image_height').value
-        self.jpeg_quality = self.get_parameter('jpeg_quality').value
+        self.bitrate = self.get_parameter('bitrate').value
         
         # Initialize CV bridge and websocket client
         self.bridge = CvBridge()
@@ -48,6 +49,15 @@ class VideoSender(Node):
         self.is_connected = False
         self.loop = None
         self.frame_queue = asyncio.Queue()
+        
+        # Initialize H.264 encoder
+        self.encoder = cv2.VideoWriter_fourcc(*'H264')
+        self.encoder_params = {
+            'fourcc': self.encoder,
+            'fps': self.fps,
+            'frameSize': (self.image_width, self.image_height),
+            'isColor': True
+        }
         
         # Create subscription to camera topic
         self.subscription = self.create_subscription(
@@ -68,7 +78,8 @@ class VideoSender(Node):
             f'Video sender initialized.\n'
             f'Listening on topic: {self.camera_topic}\n'
             f'Image size: {self.image_width}x{self.image_height}\n'
-            f'Target FPS: {self.fps}'
+            f'Target FPS: {self.fps}\n'
+            f'Bitrate: {self.bitrate/1000000:.1f} Mbps'
         )
 
     def image_callback(self, msg):
@@ -85,26 +96,47 @@ class VideoSender(Node):
             if cv_image.shape[1] != self.image_width or cv_image.shape[0] != self.image_height:
                 cv_image = cv2.resize(cv_image, (self.image_width, self.image_height))
             
-            # Convert to JPEG for efficient transmission
-            _, jpeg_frame = cv2.imencode('.jpg', cv_image, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
+            # Encode frame as JPEG
+            success, encoded_frame = cv2.imencode('.jpg', cv_image, [
+                int(cv2.IMWRITE_JPEG_QUALITY), 95  # Use JPEG encoding with high quality
+            ])
             
-            # Add frame to queue
-            if self.loop and self.is_connected:
-                asyncio.run_coroutine_threadsafe(
-                    self.frame_queue.put(jpeg_frame.tobytes()),
-                    self.loop
-                )
+            if success:
+                # Add frame to queue
+                if self.loop and self.is_connected:
+                    asyncio.run_coroutine_threadsafe(
+                        self.frame_queue.put(encoded_frame.tobytes()),
+                        self.loop
+                    )
+            else:
+                logger.error("Failed to encode frame")
                 
         except Exception as e:
             logger.error(f'Error processing image: {str(e)}')
 
     async def send_frames(self, websocket):
         """Send frames from queue to websocket."""
+        frame_count = 0
         while True:
             try:
                 frame_data = await self.frame_queue.get()
                 if isinstance(frame_data, bytes):
+                    # Send metadata first
+                    metadata = {
+                        "type": "frame_metadata",
+                        "timestamp": time.time(),
+                        "sequence_number": frame_count,
+                        "frame_type": "h264",
+                        "width": self.image_width,
+                        "height": self.image_height,
+                        "fps": self.fps,
+                        "bitrate": self.bitrate
+                    }
+                    await websocket.send(json.dumps(metadata))
+                    
+                    # Then send the frame data
                     await websocket.send(frame_data)
+                    frame_count += 1
                 else:
                     logger.warning(f"Received non-bytes frame data: {type(frame_data)}")
             except Exception as e:
