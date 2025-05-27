@@ -2,13 +2,18 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>fire_fly</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="gary@todo.todo">gary</maintainer>
-  <license>TODO: License declaration</license>
+  <version>0.0.1</version>
+  <description>ROS2 WebRTC video streaming package</description>
+  <maintainer email="lvganglvgang@gmail.com">gary</maintainer>
+  <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
-  <depend>realsense-ros</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>python3-opencv</depend>
+  <depend>python3-websockets</depend>
+  <depend>python3-nest-asyncio</depend>
+  <depend>realsense2_camera</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
