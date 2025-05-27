@@ -103,7 +103,10 @@ class VideoSender(Node):
         while True:
             try:
                 frame_data = await self.frame_queue.get()
-                await websocket.send(frame_data)
+                if isinstance(frame_data, bytes):
+                    await websocket.send(frame_data)
+                else:
+                    logger.warning(f"Received non-bytes frame data: {type(frame_data)}")
             except Exception as e:
                 logger.error(f'Error sending frame: {str(e)}')
                 self.is_connected = False
@@ -117,8 +120,8 @@ class VideoSender(Node):
                 try:
                     async with websockets.connect(
                         self.websocket_url,
-                        ping_interval=1.0,
-                        ping_timeout=2.0,
+                        ping_interval=None,  # Disable automatic ping since we handle it manually
+                        ping_timeout=None,
                         close_timeout=2.0,
                         max_size=None  # Allow large messages
                     ) as websocket:
@@ -126,9 +129,20 @@ class VideoSender(Node):
                         self.is_connected = True
                         logger.info('Connected to WebSocket server')
                         
-                        # Start sending frames
-                        await self.send_frames(websocket)
+                        # Create tasks for sending frames and handling messages
+                        send_frames_task = asyncio.create_task(self.send_frames(websocket))
+                        handle_messages_task = asyncio.create_task(self.handle_messages(websocket))
                         
+                        # Wait for either task to complete
+                        done, pending = await asyncio.wait(
+                            [send_frames_task, handle_messages_task],
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+                        
+                        # Cancel pending tasks
+                        for task in pending:
+                            task.cancel()
+                            
                 except websockets.exceptions.InvalidStatusCode as e:
                     logger.error(f"WebSocket connection failed with status code {e.status_code}")
                 except websockets.exceptions.InvalidMessage as e:
@@ -145,6 +159,28 @@ class VideoSender(Node):
                 logger.error(f'Outer WebSocket error: {str(e)}')
                 self.is_connected = False
                 await asyncio.sleep(5.0)  # Wait before reconnecting
+
+    async def handle_messages(self, websocket):
+        """Handle incoming WebSocket messages."""
+        try:
+            while True:
+                message = await websocket.recv()
+                if isinstance(message, str):
+                    if message == "ping":
+                        await websocket.send("pong")
+                        logger.debug("Received ping, sent pong")
+                    else:
+                        logger.debug(f"Received text message: {message}")
+                elif isinstance(message, bytes):
+                    # This is likely a video frame being echoed back
+                    # We can ignore these as they're just our own frames
+                    pass
+                else:
+                    logger.warning(f"Received unexpected message type: {type(message)}")
+        except websockets.exceptions.ConnectionClosed:
+            logger.info("WebSocket connection closed in message handler")
+        except Exception as e:
+            logger.error(f"Error handling messages: {str(e)}")
 
     def start_websocket_client(self):
         """Start websocket client in asyncio event loop."""
