@@ -101,13 +101,11 @@ class VideoSender(Node):
                 int(cv2.IMWRITE_JPEG_QUALITY), 95  # Use JPEG encoding with high quality
             ])
             
-            if success:
-                # Add frame to queue
-                if self.loop and self.is_connected:
-                    asyncio.run_coroutine_threadsafe(
-                        self.frame_queue.put(encoded_frame.tobytes()),
-                        self.loop
-                    )
+            if success and self.loop and self.is_connected:
+                asyncio.run_coroutine_threadsafe(
+                    self.frame_queue.put(encoded_frame.tobytes()),
+                    self.loop
+                )
             else:
                 logger.error("Failed to encode frame")
                 
@@ -121,20 +119,7 @@ class VideoSender(Node):
             try:
                 frame_data = await self.frame_queue.get()
                 if isinstance(frame_data, bytes):
-                    # Send metadata first
-                    metadata = {
-                        "type": "frame_metadata",
-                        "timestamp": time.time(),
-                        "sequence_number": frame_count,
-                        "frame_type": "h264",
-                        "width": self.image_width,
-                        "height": self.image_height,
-                        "fps": self.fps,
-                        "bitrate": self.bitrate
-                    }
-                    await websocket.send(json.dumps(metadata))
-                    
-                    # Then send the frame data
+                    # Send the frame data directly
                     await websocket.send(frame_data)
                     frame_count += 1
                 else:
