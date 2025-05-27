@@ -29,42 +29,42 @@ class VideoSender(Node):
         
         # Parameters
         self.declare_parameter('camera_topic', '/camera/camera/color/image_raw')
-        self.declare_parameter('websocket_url', 'wss://video-stream-backend-jr2c.onrender.com/ws/video')
-        self.declare_parameter('fps', 30)
-        self.declare_parameter('image_width', 640)
-        self.declare_parameter('image_height', 480)
-        self.declare_parameter('bitrate', 1000000)  # 1 Mbps
+        self.declare_parameter('use_local_server', True)  # True for local, False for remote
+        self.declare_parameter('local_ws_url', 'ws://localhost:8000/ws/video')
+        self.declare_parameter('remote_ws_url', 'wss://video-stream-backend-jr2c.onrender.com/ws/video')
+        self.declare_parameter('fps', 15)  # Reduced from 30 to 15
+        self.declare_parameter('image_width', 480)  # Reduced from 640
+        self.declare_parameter('image_height', 360)  # Reduced from 480
+        self.declare_parameter('jpeg_quality', 60)  # Reduced quality for better performance
         
         # Get parameters
         self.camera_topic = self.get_parameter('camera_topic').value
-        self.websocket_url = self.get_parameter('websocket_url').value
+        use_local = self.get_parameter('use_local_server').value
+        local_url = self.get_parameter('local_ws_url').value
+        remote_url = self.get_parameter('remote_ws_url').value
+        self.websocket_url = local_url if use_local else remote_url
         self.fps = self.get_parameter('fps').value
         self.image_width = self.get_parameter('image_width').value
         self.image_height = self.get_parameter('image_height').value
-        self.bitrate = self.get_parameter('bitrate').value
+        self.jpeg_quality = self.get_parameter('jpeg_quality').value
         
         # Initialize CV bridge and websocket client
         self.bridge = CvBridge()
         self.websocket = None
         self.is_connected = False
         self.loop = None
-        self.frame_queue = asyncio.Queue()
+        self.frame_queue = asyncio.Queue(maxsize=2)  # Limit queue size
         
-        # Initialize H.264 encoder
-        self.encoder = cv2.VideoWriter_fourcc(*'H264')
-        self.encoder_params = {
-            'fourcc': self.encoder,
-            'fps': self.fps,
-            'frameSize': (self.image_width, self.image_height),
-            'isColor': True
-        }
+        # Frame rate control
+        self.last_frame_time = 0
+        self.frame_interval = 1.0 / self.fps
         
         # Create subscription to camera topic
         self.subscription = self.create_subscription(
             Image,
             self.camera_topic,
             self.image_callback,
-            10)
+            1)  # Reduced QoS to 1
         
         logger.info(f"Subscribing to camera topic: {self.camera_topic}")
         logger.info(f"WebSocket URL: {self.websocket_url}")
@@ -79,14 +79,19 @@ class VideoSender(Node):
             f'Listening on topic: {self.camera_topic}\n'
             f'Image size: {self.image_width}x{self.image_height}\n'
             f'Target FPS: {self.fps}\n'
-            f'Bitrate: {self.bitrate/1000000:.1f} Mbps'
+            f'JPEG Quality: {self.jpeg_quality}'
         )
 
     def image_callback(self, msg):
         """Callback for processing incoming image messages."""
         if not self.is_connected:
-            logger.warning("Not connected to WebSocket server, skipping frame")
             return
+            
+        # Frame rate control
+        current_time = time.time()
+        if current_time - self.last_frame_time < self.frame_interval:
+            return
+        self.last_frame_time = current_time
             
         try:
             # Convert ROS Image message to OpenCV image
@@ -96,16 +101,19 @@ class VideoSender(Node):
             if cv_image.shape[1] != self.image_width or cv_image.shape[0] != self.image_height:
                 cv_image = cv2.resize(cv_image, (self.image_width, self.image_height))
             
-            # Encode frame as JPEG
+            # Encode frame as JPEG with lower quality
             success, encoded_frame = cv2.imencode('.jpg', cv_image, [
-                int(cv2.IMWRITE_JPEG_QUALITY), 95  # Use JPEG encoding with high quality
+                int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality
             ])
             
             if success and self.loop and self.is_connected:
-                asyncio.run_coroutine_threadsafe(
-                    self.frame_queue.put(encoded_frame.tobytes()),
-                    self.loop
-                )
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self.frame_queue.put(encoded_frame.tobytes()),
+                        self.loop
+                    )
+                except asyncio.QueueFull:
+                    pass  # Skip frame if queue is full
             else:
                 logger.error("Failed to encode frame")
                 
