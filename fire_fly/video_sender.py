@@ -32,17 +32,25 @@ class VideoSender(Node):
         self.declare_parameter('use_local_server', True)  # True for local, False for remote
         self.declare_parameter('local_ws_url', 'ws://localhost:8000/ws/video')
         self.declare_parameter('remote_ws_url', 'wss://video-stream-backend-jr2c.onrender.com/ws/video')
-        self.declare_parameter('fps', 15)  # Reduced from 30 to 15
-        self.declare_parameter('image_width', 480)  # Reduced from 640
-        self.declare_parameter('image_height', 360)  # Reduced from 480
-        self.declare_parameter('jpeg_quality', 60)  # Reduced quality for better performance
+        self.declare_parameter('fps', 15)
+        self.declare_parameter('image_width', 320)
+        self.declare_parameter('image_height', 240)
+        self.declare_parameter('jpeg_quality', 50)
         
         # Get parameters
         self.camera_topic = self.get_parameter('camera_topic').value
         use_local = self.get_parameter('use_local_server').value
         local_url = self.get_parameter('local_ws_url').value
         remote_url = self.get_parameter('remote_ws_url').value
-        self.websocket_url = local_url if use_local else remote_url
+        
+        # Set WebSocket URL based on use_local_server parameter
+        if use_local:
+            self.websocket_url = local_url
+            logger.info(f"Using LOCAL server: {self.websocket_url}")
+        else:
+            self.websocket_url = remote_url
+            logger.info(f"Using REMOTE server: {self.websocket_url}")
+        
         self.fps = self.get_parameter('fps').value
         self.image_width = self.get_parameter('image_width').value
         self.image_height = self.get_parameter('image_height').value
@@ -67,7 +75,6 @@ class VideoSender(Node):
             1)  # Reduced QoS to 1
         
         logger.info(f"Subscribing to camera topic: {self.camera_topic}")
-        logger.info(f"WebSocket URL: {self.websocket_url}")
         
         # Start websocket connection in a separate thread
         self.ws_thread = Thread(target=self.start_websocket_client)
