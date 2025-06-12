@@ -43,7 +43,9 @@ class VideoSender(Node):
         # Parameters
         self.declare_parameter('camera_topic', '/camera/camera/color/image_raw')
         self.declare_parameter('use_local_server', True)  # True for local, False for remote
-        self.declare_parameter('local_ws_url', 'ws://localhost:8000/ws/video')
+        self.declare_parameter('local_server_ip', 'localhost')  # New parameter for local server IP
+        self.declare_parameter('local_server_port', 8000)  # New parameter for local server port
+        self.declare_parameter('local_ws_url', '')  # Will be constructed from IP and port
         self.declare_parameter('remote_ws_url', 'wss://video-stream-backend-jr2c.onrender.com/ws/video')
         self.declare_parameter('fps', 15)
         self.declare_parameter('image_width', 320)
@@ -53,7 +55,9 @@ class VideoSender(Node):
         # Get parameters
         self.camera_topic = self.get_parameter('camera_topic').value
         use_local = self.get_parameter('use_local_server').value
-        local_url = self.get_parameter('local_ws_url').value
+        local_server_ip = self.get_parameter('local_server_ip').value
+        local_server_port = self.get_parameter('local_server_port').value
+        local_url = f'ws://{local_server_ip}:{local_server_port}/ws/video'
         remote_url = self.get_parameter('remote_ws_url').value
         
         # Set WebSocket URL based on use_local_server parameter
