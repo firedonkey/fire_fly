@@ -13,10 +13,11 @@ from threading import Thread, Lock
 import sys
 import time
 import queue
+import ssl
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Change to DEBUG level
     format='%(asctime)s - %(levelname)s - %(message)s',
     stream=sys.stdout
 )
@@ -109,6 +110,7 @@ class VideoSender(Node):
     def image_callback(self, msg):
         """Callback for processing incoming image messages."""
         if not self.is_connected:
+            logger.warning("Not connected to WebSocket server, skipping frame")
             return
             
         # Frame rate control
@@ -120,31 +122,42 @@ class VideoSender(Node):
         try:
             # Convert ROS Image message to OpenCV image
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            logger.debug(f"Received image with shape: {cv_image.shape}")
             
             # Resize image if needed
             if cv_image.shape[1] != self.image_width or cv_image.shape[0] != self.image_height:
                 cv_image = cv2.resize(cv_image, (self.image_width, self.image_height))
+                logger.debug(f"Resized image to: {cv_image.shape}")
             
             # Encode frame as JPEG with lower quality
             success, encoded_frame = cv2.imencode('.jpg', cv_image, [
                 int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality
             ])
             
-            if success and self.is_connected:
-                try:
-                    # Use thread-safe queue instead of asyncio.Queue
-                    self.frame_queue.put(encoded_frame.tobytes(), block=False)
-                except queue.Full:
-                    pass  # Skip frame if queue is full
+            if success:
+                frame_size = len(encoded_frame.tobytes())
+                logger.debug(f"Encoded frame size: {frame_size} bytes")
+                if self.is_connected:
+                    try:
+                        # Use thread-safe queue instead of asyncio.Queue
+                        self.frame_queue.put(encoded_frame.tobytes(), block=False)
+                        logger.debug("Frame added to queue successfully")
+                    except queue.Full:
+                        logger.warning("Frame queue is full, skipping frame")
+                else:
+                    logger.warning("Not connected to WebSocket server, skipping frame")
             else:
                 logger.error("Failed to encode frame")
                 
         except Exception as e:
             logger.error(f'Error processing image: {str(e)}')
+            import traceback
+            logger.error(f'Traceback: {traceback.format_exc()}')
 
     async def send_frames(self, websocket):
         """Send frames from queue to websocket."""
         frame_count = 0
+        last_log_time = time.time()
         while True:
             try:
                 # Use thread-safe queue with timeout
@@ -153,6 +166,15 @@ class VideoSender(Node):
                     if isinstance(frame_data, bytes):
                         await websocket.send(frame_data)
                         frame_count += 1
+                        
+                        # Log frame rate every 5 seconds
+                        current_time = time.time()
+                        if current_time - last_log_time >= 5.0:
+                            fps = frame_count / (current_time - last_log_time)
+                            logger.info(f"Current sending FPS: {fps:.2f}, Frame size: {len(frame_data)} bytes")
+                            frame_count = 0
+                            last_log_time = current_time
+                            
                     else:
                         logger.warning(f"Received non-bytes frame data: {type(frame_data)}")
                 except queue.Empty:
@@ -160,6 +182,8 @@ class VideoSender(Node):
                     continue
             except Exception as e:
                 logger.error(f'Error sending frame: {str(e)}')
+                import traceback
+                logger.error(f'Traceback: {traceback.format_exc()}')
                 self.is_connected = False
                 break
 
@@ -168,17 +192,32 @@ class VideoSender(Node):
         while rclpy.ok():
             try:
                 logger.info(f"Attempting to connect to WebSocket server at {self.websocket_url}")
+                
                 async with websockets.connect(
                     self.websocket_url,
                     ping_interval=None,
                     ping_timeout=None,
                     close_timeout=2.0,
-                    max_size=None
+                    max_size=None,
+                    ssl=True if self.websocket_url.startswith('wss://') else False,
+                    server_hostname='video-stream-backend-jr2c.onrender.com' if 'onrender.com' in self.websocket_url else None
                 ) as websocket:
                     with self.lock:
                         self.websocket = websocket
                         self.is_connected = True
-                    logger.info('Connected to WebSocket server')
+                    logger.info('Connected to WebSocket server successfully')
+                    
+                    # Log connection details
+                    if 'onrender.com' in self.websocket_url:
+                        logger.info('Connected to deployed server')
+                        # Test connection with a small message
+                        try:
+                            await websocket.send("test_connection")
+                            logger.info("Successfully sent test message to deployed server")
+                        except Exception as e:
+                            logger.error(f"Failed to send test message: {str(e)}")
+                    else:
+                        logger.info('Connected to local server')
                     
                     # Create tasks for sending frames and handling messages
                     send_frames_task = asyncio.create_task(self.send_frames(websocket))
@@ -194,8 +233,33 @@ class VideoSender(Node):
                     for task in pending:
                         task.cancel()
                         
+            except websockets.exceptions.InvalidStatusCode as e:
+                logger.error(f"WebSocket connection failed with status code {e.status_code}")
+                if e.status_code == 403:
+                    logger.error("Access forbidden - server might be blocking this IP address")
+                elif e.status_code == 404:
+                    logger.error("Server endpoint not found")
+            except websockets.exceptions.InvalidMessage as e:
+                logger.error(f"WebSocket invalid message: {str(e)}")
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.error(f"WebSocket connection closed: {str(e)}")
+            except ssl.SSLError as e:
+                logger.error(f"SSL/TLS error: {str(e)}")
+                logger.error("This might be due to SSL certificate verification issues")
+            except ConnectionRefusedError as e:
+                logger.error(f"Connection refused: {str(e)}")
+                logger.error("Server might be blocking the connection or not accepting WebSocket connections")
+            except OSError as e:
+                logger.error(f"Network error: {str(e)}")
+                if "Name or service not known" in str(e):
+                    logger.error("DNS resolution failed - cannot resolve server hostname")
+                elif "Network is unreachable" in str(e):
+                    logger.error("Network is unreachable - check network connectivity")
             except Exception as e:
                 logger.error(f'WebSocket connection error: {str(e)}')
+                logger.error(f'Error type: {type(e).__name__}')
+                import traceback
+                logger.error(f'Traceback: {traceback.format_exc()}')
                 with self.lock:
                     self.is_connected = False
                 await asyncio.sleep(5.0)  # Wait before reconnecting
