@@ -4,6 +4,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 import cv2
+from cv_bridge import CvBridge
 import numpy as np
 import asyncio
 import json
@@ -22,14 +23,6 @@ logging.basicConfig(
     stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
-
-# Import cv_bridge in a try-except block to handle potential import issues
-try:
-    from cv_bridge import CvBridge
-except Exception as e:
-    logger.error(f"Error importing cv_bridge: {str(e)}")
-    logger.error("Please make sure you have built cv_bridge from source and sourced the workspace")
-    sys.exit(1)
 
 class VideoSender(Node):
     def __init__(self):
